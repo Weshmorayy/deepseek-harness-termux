@@ -130,13 +130,17 @@ Full AI engineering ecosystem per `Instruction_deepseek.md` + `AI-ENGINEERING-RE
 ├── memory/architecture.md ← 4-level memory architecture
 ├── research/              ← (for future research outputs)
 ├── experimental/          ← (for experiments)
-└── scripts/
-    ├── ai-status          ← system dashboard
-    ├── ai-models          ← model table + refresh
-    ├── ai-quota           ← quota status
-    ├── ai-health          ← provider ping check
-    ├── freellmapi-start   ← start API gateway
-    └── freellmapi-client  ← start dashboard UI
+├── scripts/
+│   ├── ai-status          ← system dashboard
+│   ├── ai-models          ← model table + refresh
+│   ├── ai-quota           ← quota status
+│   ├── ai-health          ← provider ping check
+│   ├── freellmapi-start   ← start API gateway
+│   ├── freellmapi-client  ← start dashboard UI
+│   ├── dsh-start          ← launch DSH (also refreshes the OpenRouter model list)
+│   └── refresh-openrouter-models.mjs ← keep the DSH OpenRouter model list current
+└── docs/
+    └── openrouter-model-refresh.md   ← OpenRouter route architecture (see Roadblock 16)
 
 ```
 
@@ -231,3 +235,58 @@ In `@deepseek-ai/dsh-fs-local/lib/index.js`, `writeFileAtomic()` used `linkFile(
 
 ### Solution
 Patched `writeFileAtomic()` in `@deepseek-ai/dsh-fs-local/lib/index.js`: on `EACCES` or `EPERM` during `linkFile()`, safely fall back to `rename(tempPath, absolutePath)`.
+
+---
+
+## Roadblock 16 — OpenRouter Route Shows Only 4 Models (2026-10-01)
+
+### Symptom
+The OpenRouter card in **Settings → Models** offers just four models (Space Bunny Alpha, FLUX.1 [dev], FLUX.1 [schnell], ByteDance SeeDream 3). OpenRouter advertises 400+, and **Fetch available models** returns the same four.
+
+### Root Cause
+**Not an OpenRouter outage, and not a DSH bug — a configuration rule.** In `~/.dsh/settings.yaml`, the `openrouter` provider carried an explicit `models:` list. In `@deepseek-ai/dsh-llm-pi-ai`, that list *replaces* the bundled catalog instead of adding to it:
+
+```js
+// dsh-llm-pi-ai/lib/index.js:651  (resolveRouteModels)
+const entries = configured.length > 0 ? configured : [...defaults.values()].map(...)
+```
+
+Three of those four ids (`flux-1-dev`, `flux-1-schnell`, `bytedance/seedream-3`) no longer exist on OpenRouter's `/api/v1/models` listing at all — they were hand-written and had silently rotted.
+
+### Why "Fetch available models" Cannot Fix It
+Discovery short-circuits to the catalog frozen inside `@earendil-works/pi-ai` **before any network call**:
+
+```js
+// dsh-llm-pi-ai/lib/index.js:2274  (discoverModels)
+if (request.provider !== void 0) {
+  const installed = catalogModels(request.provider)
+  if (installed.size > 0) return [...installed.values()]...   // network never reached
+}
+```
+
+Every provider named `openrouter` therefore returns the bundled snapshot. This is upstream [deepseek-harness#4469](https://github.com/deepseek-ai/deepseek-harness/discussions/4469), so it cannot be worked around in config.
+
+### Solution — four routes, auto-maintained
+`~/.dsh/settings.yaml` now uses:
+
+| Route | Source | Count |
+|---|---|---|
+| `openrouter` | pi-ai package (no `models:`, no `api:`, no `baseURL:`) | ~366, with full cost/reasoning/protocol metadata |
+| `openrouter-extra` | live `GET /api/v1/models`, minus the catalog | ~120 |
+| `openrouter-images` | live `GET /api/v1/images/models` | ~55 |
+| `space-bunny` | pinned | 1 |
+
+Self-healing in both directions: a new OpenRouter model appears in `openrouter-extra` on the next refresh, and silently migrates into the catalog route once pi-ai ships it.
+
+The image route works because discovery appends `/models` to whatever base URL it is given (`index.js:2163`), so `https://openrouter.ai/api/v1/images` lands on OpenRouter's separate image catalog.
+
+### Accurate tokens and reasoning (both were wrong)
+- **maxTokens** must come from `top_provider.max_completion_tokens`. A hand-written 131072 clamp understated **15 models**; Space Bunny Alpha's true value is **524288**.
+- **Effort menus** must come from each model's own `reasoning.supported_efforts` ladder. Space Bunny Alpha reports `mandatory: true`, meaning the API *rejects* `effort: "none"` — a config offering an `off` level fails at request time. OpenRouter's `"none"` maps to pi-ai's `off` level, and `max`/`xhigh` must be offered where listed.
+
+### Maintenance
+`dsh-start` refreshes automatically (≤ once per 12h, `--force-refresh` to override). The generator parses its own output with dsh's `js-yaml` and **refuses to write** if invalid, writes atomically via `rename(2)`, and never blocks startup on a dead network. Backups: `~/.dsh/settings.yaml.bak-*`.
+
+> Note: DSH is a chat harness with no image-*generation* path. Pure generation models (seedream, flux.2, qwen-image) are served by `POST /api/v1/images/generations`, which DSH never calls — chat models that emit images (gemini-3.1-flash-image, gpt-5-image) do work.
+
+Source and full detail: `Weshmorayy/ai-system-termux` → `docs/openrouter-model-refresh.md` and `scripts/refresh-openrouter-models.mjs`.
