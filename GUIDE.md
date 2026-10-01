@@ -290,3 +290,79 @@ The image route works because discovery appends `/models` to whatever base URL i
 > Note: DSH is a chat harness with no image-*generation* path. Pure generation models (seedream, flux.2, qwen-image) are served by `POST /api/v1/images/generations`, which DSH never calls — chat models that emit images (gemini-3.1-flash-image, gpt-5-image) do work.
 
 Source and full detail: `Weshmorayy/ai-system-termux` → `docs/openrouter-model-refresh.md` and `scripts/refresh-openrouter-models.mjs`.
+
+---
+
+## Roadblock 17 — FreeLLMAPI Dashboard Missing Free & Stealth Models (2026-10-01)
+
+### Symptom
+The FreeLLMAPI dashboard listed only **12** OpenRouter models, and
+`stealth/space-bunny-alpha` was never among them — even though the model is
+zero-priced and served fine through the DSH route.
+
+### Root Cause
+**Nothing syncs OpenRouter live.** FreeLLMAPI builds its catalog from two
+sources, neither of them OpenRouter:
+
+1. A **hardcoded seed** in `server/src/db/migrations/20260101_000000_legacy_baseline.ts`.
+2. A **signed monthly catalog** from `api.freellmapi.co`
+   (`server/src/services/catalog-sync.ts`) — 338 models across 24 platforms,
+   and `openrouter` is **not** one of them
+   (`settings.catalog_applied_json.platforms`).
+
+### Why the Server's Own Discovery Cannot Fix It
+`server/src/services/builtin-model-discovery.ts` would fill the list from
+OpenRouter's `/models`, but three gates block `openrouter`:
+
+| # | Gate | Location |
+|---|---|---|
+| 1 | Not in `BUILTIN_DISCOVERY_PLATFORMS` (`['github','longcat','siliconflow']`) | `:49` |
+| 2 | `builtinDiscoveryMode()` defaults to `'manual'`, so it never schedules | `:64` |
+| 3 | **`hasCatalogOwnedRows()`** — all 317 rows are `source='catalog'` | `:84` |
+
+Gate 3 is decisive; even fixing 1 and 2 leaves it blocked.
+
+### Solution
+**Deliberately did not patch `hasCatalogOwnedRows()`.** It is shared, and the
+gated-provider test at `__tests__/services/builtin-model-discovery.test.ts:117`
+shows the allowlist is an intentional audit gate for premium providers.
+
+Instead, `scripts/sync_openrouter_free_models.py` writes rows with
+`source='discovered'`. That provenance sits outside `hasCatalogOwnedRows`, and
+`catalog-sync.ts:654` prunes discovered rows **only on platforms the catalog
+manages** — `openrouter` is not managed, so these rows survive every monthly
+sync. No upstream FreeLLMAPI source was modified.
+
+### Free Means "Zero-Priced", Not ":free Suffix"
+A model is free when the sum of **all** pricing fields equals 0 — the same rule
+the Open WebUI pipe uses (`is_free_model`, bundled pipe line 19900). Checking
+the price rather than the suffix is what catches stealth models: 21 models are
+free but only 17 carry `:free`, and the 4 without are exactly the stealth-style
+ones:
+
+```
+stealth/space-bunny-alpha
+google/lyria-3-pro-preview
+google/lyria-3-clip-preview
+openrouter/free
+```
+
+Conversely, every `:free` model is also zero-priced, so the check never misses
+one and never imports a paid model.
+
+### Two Non-Obvious Requirements
+1. **`profile_models` linkage is mandatory.** `routes/free-tier.ts:129` and
+   `routes/models.ts:449` join through it, so a model without a row is never
+   exposed. Writing `models` alone changes nothing.
+2. **Startup ordering.** `freellmapi-start` exits early when the gateway is
+   already listening. Since `dsh-start` invokes it as step 1 and FreeLLMAPI is
+   normally already up, the sync had to move **above** that early exit —
+   otherwise it was skipped on every boot. Writing to the DB while the server
+   runs is safe: the catalog is read per request.
+
+### Result
+Gateway serves 274 models (was 266), including `stealth/space-bunny-alpha` at
+its true 1M context with vision and tools.
+
+Source and full detail: `Weshmorayy/ai-system-termux` →
+`docs/freellmapi-openrouter-sync.md` and `scripts/sync_openrouter_free_models.py`.
