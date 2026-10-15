@@ -253,3 +253,64 @@ script handles this automatically on re-run.
 | `.../dsh/node_modules/koffi@3.3.0` | koffi upgraded from bundled 3.1.1 (no arm64 prebuilt) |
 | `.../dsh/node_modules/@koromix/koffi-android-arm64@3.3.0` | koffi native `.node` binary |
 | `.../dsh/node_modules/node-addon-require-builtin-android-arm64/` | Profile resolution JS shim |
+
+---
+
+## Post-upgrade fixes (applied 2026-10-15, after initial upgrade)
+
+### Fix A — Session persistence EACCES on `.zstd` link (run after every DSH upgrade)
+
+Two sites in `dsh-session-persistence-jsonl/lib/index.js` need patching:
+
+```bash
+DSH_SESH="$(npm root -g)/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js"
+
+# 1. Add rename to imports (line 4)
+sed -i 's/import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat/import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat/' "$DSH_SESH"
+
+# 2. Wrap the internals.fs.link() call at ~line 2034 with EACCES→rename fallback
+#    (patch -p1 with patches/02-session-persistence-link-rename.patch; if it fails,
+#    apply the fix manually — see GUIDE.md Roadblock 19 for the exact diff)
+```
+
+The `.zstd` link error also comes from the `link(tmp, finalPath)` at ~line 3142 —
+this is already handled by the original patch 02 (the hunk 2 succeeded).
+
+### Fix B — Workspace archive sessionKnown check
+
+```bash
+DSH_WORK="$(npm root -g)/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-workspace/lib/index.js"
+# Comment out the sessionKnown check — patch 06 hunk 1 failed on 0.2.0 new bundle
+sed -i 's/if (!await this.sessionKnown(sessionId)) throw new WorkspaceUnknownSessionError(sessionId, "archive");/\/\/ [Termux] skip: if (!await this.sessionKnown(sessionId)) throw new WorkspaceUnknownSessionError(sessionId, "archive");/' "$DSH_WORK"
+```
+
+### Fix C — OpenRouter refresh model guard
+
+In `~/.dsh/refresh-openrouter-models.mjs` around line 255–258, the guard that
+prevents overwriting the file when the default model would be removed was too
+strict — it also rejected catalog routes (which have no explicit `models:` list).
+Fixed by checking `Array.isArray(route?.models) && route.models.length > 0` before
+running the membership check.
+
+### Fix D — Missing sidebar / navigation (browser localStorage)
+
+DSH 0.2.0 changed the `localStorage` schema (`dsh.workspace.view.v5`). Old
+cached state causes the sidebar and nav buttons to vanish.
+
+**Fix:** DevTools → Application tab → Local Storage → `http://127.0.0.1:3080`
+→ delete all `dsh.*` keys → hard reload (`Ctrl+Shift+R`).
+
+The left-of-session-name button is the **workspace switcher panel toggle**.
+On screens < 1024 px `dsh-web-mobile` hides the sidebar rail — widen the
+window or rotate to landscape to restore it.
+
+### Fix E — flock android crash
+
+See `patches/09-node-addon-system-flock-android.patch` and `install.sh` step 5e.
+
+### Fix F — dsh-vision-router version exemption
+
+```bash
+dsh plugin --profile web allow-version dsh-vision-router@2.2.1 \
+  --dsh-version 0.2.0-rc.2 --accept-risk
+```

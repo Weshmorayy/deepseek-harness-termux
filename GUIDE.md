@@ -456,3 +456,73 @@ and parses stdout for the token URL pattern `http://127.0.0.1:PORT/?token=...`.
 
 ### See also
 Full step-by-step detail: `docs/UPGRADE-0.2.0-rc.2.md`
+
+---
+
+## Roadblock 19 — Post-upgrade patch re-application failures (2026-10-15)
+
+### Symptom A: `This turn failed — EACCES: permission denied, link '...session.v4.jsonl.zstd.tmp' -> '...session.v4.jsonl.zstd'`
+
+Patches 02 and 06 were not re-applied after the 0.2.0 upgrade (patch hunks no
+longer matched the new bundle lines). Two distinct link() call sites needed fixing:
+
+1. **`dsh-session-persistence-jsonl` L4** — `rename` was not in the `fs/promises` import:
+   ```diff
+   -import { link, lstat, mkdir, ... } from "node:fs/promises";
+   +import { link, lstat, mkdir, ..., rename, ... } from "node:fs/promises";
+   ```
+2. **`dsh-session-persistence-jsonl` L2034** — `internals.fs.link()` rethrew
+   EACCES instead of falling back to rename:
+   ```diff
+   -  if (isEEXIST(error)) return false;
+   -  throw error;
+   +  if (error?.code === 'EACCES' || error?.code === 'EPERM') {
+   +    await rename(staged, currentPath);
+   +  } else if (isEEXIST(error)) { return false; }
+   +  else { throw error; }
+   ```
+3. **`dsh-workspace` L527** — `sessionKnown()` check threw on sessions absent
+   from persistence after an unclean shutdown. Commented out with a Termux note.
+
+### Symptom B: `[openrouter] refresh skipped: saved default openrouter/z-ai/glm-5.3-flash would not resolve`
+
+The refresh script guarded against a model being removed from `openrouter-extra`.
+But `z-ai/glm-5.3-flash` lives in the **catalog route** (`openrouter`), which has
+NO explicit `models:` list — it uses the pi-ai bundled catalog. The guard
+incorrectly failed because `routes['openrouter'].models` is undefined.
+
+Fix in `refresh-openrouter-models.mjs`: skip the guard when the route has no
+explicit models list (catalog routes). After fix: `[openrouter] refreshed: 98 extra + 57 image`.
+
+### Symptom C: Missing sidebar / navigation button in DSH Web UI
+
+Caused by **stale `localStorage`** from the old DSH version. The `dsh.workspace.view.v5`
+key expects new properties (`groupExpansion`, `sessionUpdatedAtByAccount`, etc.) added in 0.2.0.
+
+**Fix:** In your browser, open DevTools → Application → Local Storage →
+`http://127.0.0.1:3080` → delete all `dsh.*` keys → hard reload (Ctrl+Shift+R).
+
+The "home" / back button on the left of the session name is the **workspace
+switcher** — it collapses the session list panel. If it disappears, it means
+`dsh-web-mobile` is hiding it on narrow screens (< 1024 px). Rotate to
+landscape or widen the browser window to restore the full layout.
+
+### Symptom D: Settings tabs stacked weirdly
+
+Intentional 0.2.0 design: settings moved from a flat `settings.yaml` into
+per-plugin configuration sections inside the profile. Each plugin now has its
+own collapsible settings group. The stacked appearance is the new normal.
+
+### Symptom E: `flock is not supported on android-arm64`
+
+Patched in Roadblock 18 follow-up (see `patches/09-node-addon-system-flock-android.patch`).
+`loadBinding()` in `node-addon-system/lib/flock.js` now maps `android→linux`
+and falls back to a no-op mock if no native binary is found.
+
+### Symptom F: `dsh-vision-router@2.2.1 incompatible`
+
+Run once to permanently exempt it:
+```bash
+dsh plugin --profile web allow-version dsh-vision-router@2.2.1 \
+  --dsh-version 0.2.0-rc.2 --accept-risk
+```
