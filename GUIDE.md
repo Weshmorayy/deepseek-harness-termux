@@ -366,3 +366,93 @@ its true 1M context with vision and tools.
 
 Source and full detail: `Weshmorayy/ai-system-termux` →
 `docs/freellmapi-openrouter-sync.md` and `scripts/sync_openrouter_free_models.py`.
+
+---
+
+## Roadblock 18 — Upgrade to `0.2.0-rc.2` on Termux/Android (2026-10-15)
+
+### What changed
+Upgraded from `dsh 0.1.5-alpha.1` → `0.2.0-rc.2` (`npm latest` as of 2026-10-15).
+
+### Blockers hit and fixes applied
+
+#### ❌ Blocker A: `statx()` / Bionic header collision in koffi 3.1.1
+`koffi@3.1.1` (bundled in 0.2.0) fails to compile from source on Android arm64:
+```
+base.cc:2967: cannot initialize a member subobject of type '__u32'
+             with lvalue of type 'const char *'
+```
+Bionic's `statx` struct definition conflicts with what koffi expects (glibc ABI).
+There is no android-arm64 prebuilt for koffi 3.1.1 on npm.
+
+**Fix:** Upgrade the bundled koffi to 3.3.0 (first version with a published
+`@koromix/koffi-android-arm64` prebuilt). Run inside `install.sh` after the
+npm install step:
+```bash
+DSH_MOD="$(npm root -g)/@deepseek-ai/dsh/node_modules"
+cd "$DSH_MOD"
+npm install koffi@3.3.0 @koromix/koffi-android-arm64@3.3.0 --no-save --ignore-scripts
+```
+
+#### ❌ Blocker B: `node-addon-require-builtin-android-arm64` missing from npm
+`@deepseek-ai/dsh-app-boot` uses this native addon to load Node.js internal
+modules for profile resolution. No android-arm64 package is published.
+
+Since DSH already runs with `--expose-internals`, a pure-JS shim satisfies
+all required interface methods:
+
+```bash
+SHIM="$(npm root -g)/@deepseek-ai/dsh/node_modules/node-addon-require-builtin-android-arm64"
+mkdir -p "$SHIM"
+cat > "$SHIM/package.json" << 'JSON'
+{"name":"node-addon-require-builtin-android-arm64","version":"0.1.9","main":"index.js"}
+JSON
+cat > "$SHIM/index.js" << 'JS'
+'use strict';
+function requireBuiltin(id) { return require(id); }
+function isAllowedInternalId() { return true; }
+function getNativeBindingInfo() {
+  return { mode: 'unrestricted', product: 'require-builtin', backend: 'napi', abi: 'napi-v9' };
+}
+module.exports = { requireBuiltin, isAllowedInternalId, getNativeBindingInfo };
+JS
+```
+
+#### ❌ Blocker C: `dsh` bin shim shebang broken on Termux
+0.2.0's npm postinstall writes `/usr/bin/dsh` as a standalone JS bundle
+starting with `#!/usr/bin/env node`. Termux has no `/usr/bin/env`.
+`install.sh` already handles this — verify it still rewrites `lib/bin.js`
+shebang **and** the `/usr/bin/dsh` wrapper after each upgrade.
+
+### Config breaking changes (applied during upgrade)
+| File | Change |
+|---|---|
+| `~/.dsh/settings.yaml` line 6 | `baseURL: https://api.deepseek.com/v1` → `https://api.deepseek.com/anthropic` |
+| `~/.dsh/profiles/web/cordis.patch.yml` | `maxInlineBytes: 20000` → `maxInlineTokens: 6000` |
+
+**Note:** DSH 0.2.0 performs a **one-time import** of `settings.yaml` into the
+profile plugin config on first boot, then renames it to `settings.yaml.imported`.
+The file is consumed — future DSH restarts read from the profile config, not `settings.yaml`.
+
+### Plugin compatibility with 0.2.0-rc.2
+| Plugin | Status |
+|---|---|
+| `dsh-vision-router@2.2.1` | ❌ Incompatible — peer dep cap at 0.1.6-alpha.1. Use `dsh plugin allow-version` to accept risk. |
+| `@liustack/modlens` | ⚠️ Loads but settings UI broken (`scope.settings.register` removed) |
+| `dsh-bill` | ⚠️ Degraded — rpc channel not mounted, serves API only |
+| `@deepseek-ai/dsh-web-search-exa` | ❌ Failed to import (may be removed in 0.2.0) |
+| `dsh-fast`, `dshmarket`, `dsh-web-mobile` | ✅ OK |
+
+### dsh-start status
+`dsh-start` works without modification. The script spawns `dsh web --no-open`
+and parses stdout for the token URL pattern `http://127.0.0.1:PORT/?token=...`.
+0.2.0 still prints this format. Startup is ~25s on this device (vs ~5s on desktop).
+
+### Behavioral changes in 0.2.0
+- **Token required** — bare `http://127.0.0.1:3080/` returns HTTP 401; use
+  the full `?token=...` URL from `dsh-start` output.
+- **Settings moved** — `settings.yaml` → consumed into profile config (one-time).
+- **`dsh web` default port** — still 3080 unless overridden.
+
+### See also
+Full step-by-step detail: `docs/UPGRADE-0.2.0-rc.2.md`

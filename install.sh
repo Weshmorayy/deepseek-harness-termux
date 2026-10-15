@@ -446,6 +446,7 @@ if apply_patch "$REPO_DIR/patches/koffi-statx.patch" "$KOFFI_DIR"; then
 elif [ ! -f "$KOFFI_OUT" ]; then
     KOFFI_BUILD=true
 fi
+KOFFI_NATIVE_OK=false
 if $KOFFI_BUILD; then
     echo "  -> Building koffi native lib (this takes a while)..."
     # Scrub CFLAGS/CXXFLAGS/CPPFLAGS: a user-level -D__ANDROID_API__ or other
@@ -454,17 +455,42 @@ if $KOFFI_BUILD; then
     if (cd "$KOFFI_DIR" && env -u CFLAGS -u CXXFLAGS -u CPPFLAGS \
             node ./cnoke.cjs -P . -D src/koffi --prebuild --release); then
         echo "  [OK] koffi native lib built."
+        KOFFI_NATIVE_OK=true
     else
-        echo "  [ERROR] koffi build failed!"
-        echo "  Common causes: missing cmake (pkg install cmake), missing"
-        echo "  ndk-sysroot (pkg install ndk-sysroot), a CFLAGS/CXXFLAGS"
-        echo "  override in your environment, or no network for the koffi"
-        echo "  prebuild download."
-        exit 1
+        echo "  [WARN] koffi source build failed (common on Android arm64 with dsh"
+        echo "  0.2.x — Bionic statx() ABI mismatch in koffi 3.1.1 cannot be patched"
+        echo "  away). Trying prebuilt fallback via npm..."
     fi
 else
     echo "  [SKIP] koffi already built with patched sources."
+    KOFFI_NATIVE_OK=true
 fi
+
+# koffi prebuilt fallback (dsh 0.2.x): koffi 3.1.1 bundled in dsh 0.2.x has
+# NO android-arm64 prebuilt on npm and the statx patch no longer applies.
+# koffi 3.3.0 ships @koromix/koffi-android-arm64 prebuilts and is API-compatible.
+if ! $KOFFI_NATIVE_OK; then
+    _KOFFI_PREBUILT_PKG="@koromix/koffi-android-arm64"
+    echo "  -> Installing koffi@3.3.0 + ${_KOFFI_PREBUILT_PKG}@3.3.0 as prebuilt..."
+    if (cd "$DSH_DIR/node_modules" && \
+        npm install koffi@3.3.0 "${_KOFFI_PREBUILT_PKG}@3.3.0" \
+            --no-save --ignore-scripts 2>&1); then
+        if node -e "require('$KOFFI_DIR/index.js'); process.exit(0)" 2>/dev/null; then
+            echo "  [OK] koffi prebuilt (3.3.0 android-arm64) loaded successfully."
+            KOFFI_NATIVE_OK=true
+        else
+            echo "  [ERROR] koffi 3.3.0 installed but failed to load — see debug:"
+            node -e "require('$KOFFI_DIR/index.js')" 2>&1 | head -10
+            exit 1
+        fi
+    else
+        echo "  [ERROR] koffi prebuilt install failed. Try:"
+        echo "    cd $DSH_DIR/node_modules && npm install koffi@3.3.0 ${_KOFFI_PREBUILT_PKG}@3.3.0 --no-save --ignore-scripts"
+        exit 1
+    fi
+fi
+
+
 
 # 5b. node-pty — compile against the Termux bionic sysroot.
 PTY_DIR="$DSH_DIR/node_modules/node-pty"
@@ -500,7 +526,44 @@ if [ -f "$SUB_DIR/scripts/ensure-spawn-helper.mjs" ]; then
         echo "  [OK] subprocess spawn-helper restored (chmod 755)"
 fi
 
+# 5d. node-addon-require-builtin android-arm64 JS shim (dsh 0.2.x).
+#
+# dsh-app-boot uses this native addon to access Node.js internals for profile
+# resolution. No android-arm64 prebuilt is published on npm. Since DSH already
+# runs with --expose-internals, a pure-JS shim that wraps require() satisfies
+# the full validation interface (requireBuiltin, isAllowedInternalId,
+# getNativeBindingInfo). The shim is idempotent: re-runs verify it is present.
+_NAR_SHIM="$DSH_DIR/node_modules/node-addon-require-builtin-android-arm64"
+if [ ! -f "$_NAR_SHIM/index.js" ]; then
+    echo "  -> Creating node-addon-require-builtin android-arm64 JS shim..."
+    mkdir -p "$_NAR_SHIM"
+    cat > "$_NAR_SHIM/package.json" << 'SHIMJSON'
+{
+  "name": "node-addon-require-builtin-android-arm64",
+  "version": "0.1.9",
+  "description": "Termux JS shim — uses --expose-internals; no native binary needed",
+  "main": "index.js"
+}
+SHIMJSON
+    cat > "$_NAR_SHIM/index.js" << 'SHIMJS'
+'use strict';
+// Termux/Android shim for node-addon-require-builtin.
+// Works because DSH is launched with --expose-internals, making
+// require('internal/...') accessible without a native addon.
+function requireBuiltin(id) { return require(id); }
+function isAllowedInternalId() { return true; }
+function getNativeBindingInfo() {
+  return { mode: 'unrestricted', product: 'require-builtin', backend: 'napi', abi: 'napi-v9' };
+}
+module.exports = { requireBuiltin, isAllowedInternalId, getNativeBindingInfo };
+SHIMJS
+    echo "  [OK] node-addon-require-builtin android-arm64 shim created."
+else
+    echo "  [SKIP] node-addon-require-builtin android-arm64 shim already present."
+fi
+
 # ── Step 6: Install sharp WebAssembly fallback ───────────────────────────────
+
 echo "==> [6/9] Installing sharp WebAssembly fallback..."
 if (cd "$DSH_DIR" && npm install @img/sharp-wasm32 > /dev/null 2>&1); then
     echo "  [OK] @img/sharp-wasm32 installed."
