@@ -770,3 +770,36 @@ sidebar controller, which calls `layout.openRightbar()`. This requires
 `dsh-web-mobile` to be active (it provides the button). Once the plugin
 activates, clicking the files icon in the header will open the right panel.
 The panel renders the file preview via `dsh-client-ui-sidebar-documentpreview`.
+
+---
+
+## Roadblock 25 — dsh-web-mobile 3.1.0 — the fix was a version update (2026-10-15)
+
+### Root cause (final)
+`dsh-web-mobile@2.4.1` was the wrong version. The author released **3.1.0** on
+2026-10-13 (two days before this session) which:
+- Adds `>=0.2.0-rc.1 <0.3.0-0` to peerDependencies → no version exemption needed
+- Removes `workspaces` from the cordis inject array (was the blocker — `workspaces`
+  is a slot-hook service, not available to plugin fibers via inject)
+- Fixes the "顶栏座位" (topbar seat) layout — exactly the missing nav toggle + files button
+
+All the `lib/client.js` hand-patching in Roadblocks 22-24 was unnecessary
+(though they happened to arrive at the same inject fix independently).
+
+### Fix
+```bash
+cd ~/.dsh/profiles/web
+pnpm add "dsh-web-mobile@github:mexiaosqwq/dsh-web-mobile#d4e9a5b426a3b66d48c4feeb7dcf99ac0cc4a3cb"
+dsh plugin --profile web allow-version dsh-web-mobile@3.1.0 \
+  --dsh-version 0.2.0-rc.2 --accept-risk
+```
+
+After this update:
+- Sidebar toggle button appears left of session name ✅
+- Files/folder button appears right of toggle ✅
+- File card preview opens right sidebar panel ✅
+
+### File preview (clicking file cards)
+The right-sidebar expand button (`[data-sidebar-right-expand]`) is hidden by
+desktop CSS. `dsh-web-mobile@3.1.0` programmatically clicks it via
+`openFilesPanel()` triggered by the files button in the session header.

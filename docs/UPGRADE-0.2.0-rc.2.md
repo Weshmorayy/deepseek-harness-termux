@@ -385,3 +385,19 @@ sed -i "s/ctx\.settingsScope\.bind/(ctx.settingsScope ?? ctx.settings)?.bind/g" 
 Also patch these files the same way:
 - `dsh-vision-router/lib/vision-routing-settings-prelude.js`
 - `dsh-vision-router/lib/structured-flow-hardening.js`
+
+---
+
+## dsh-web-mobile 3.1.0 (2026-10-15) — UI fix
+
+The correct fix for missing nav toggle + files button was updating the plugin:
+
+```bash
+cd ~/.dsh/profiles/web
+pnpm add "dsh-web-mobile@github:mexiaosqwq/dsh-web-mobile#d4e9a5b426a3b66d48c4feeb7dcf99ac0cc4a3cb"
+dsh plugin --profile web allow-version dsh-web-mobile@3.1.0 \
+  --dsh-version 0.2.0-rc.2 --accept-risk
+```
+
+Version 3.1.0 adds explicit 0.2.0 peerDep support and fixes the inject
+(removes `workspaces` which was not a cordis service — it's a slot hook).
