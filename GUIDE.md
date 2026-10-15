@@ -686,3 +686,46 @@ The client-side bundle of `dsh-vision-router@2.2.1` injects `['settingsScope', .
 (required). In 0.2.0 the client context doesn't expose `settingsScope`. Fixed by
 making the injection **optional** (`?settingsScope`), which lets the plugin
 activate even without settings, using `(ctx.settingsScope ?? ctx.settings)?.bind(...)`.
+
+---
+
+## Roadblock 23 — Correct cordis optional inject (2026-10-15)
+
+### What failed and why
+The `?serviceName` prefix in the inject array is NOT valid cordis v4 syntax —
+cordis treats it as a literal service name (including `?`), so the fiber still
+hangs waiting for a service named `"?settingsScope"`.
+
+In `_refresh()`, every key in `inject` is checked. If any is missing,
+`epoch = INACTIVE` and the plugin stays pending. There is no array-level
+optional syntax.
+
+### Correct fix for an inject that can't always be satisfied
+
+**Option A (used here):** Remove the service from `inject` entirely.
+Access it inside `apply` via `ctx.reflect._getImpl('settings', true)?.value`
+which reads the service store directly without the inject guard.
+
+```diff
+-exports.inject = ['?settingsScope', 'slots', 'locale', 'sessions', 'remote']
++exports.inject = ['slots', 'locale', 'sessions', 'remote']
+```
+
+```diff
+-const localScope = (ctx.settingsScope ?? ctx.settings)?.bind({ namespace: 'vision-router' })
++const localScope = (() => {
++  try { return ctx.reflect._getImpl('settings', true)?.value?.bind?.({ namespace: 'vision-router' }) }
++  catch(e) { return undefined }
++})()
+```
+
+**Option B (alternative):** Use `ctx.inject(['settings'], (scoped) => { ... })`
+inside apply — this is the cordis-blessed way for conditional service access.
+But it requires restructuring the whole apply function around the callback.
+
+Files patched:
+- `dsh-vision-router/lib/client.js` — inject + localScope
+- `dsh-vision-router/lib/vision-routing-settings-prelude.js` — ctx.settingsScope usages
+
+`structured-flow-hardening.js` uses a local variable named `settingsScope` — that's
+an internal variable, not a cordis service access, so it's left alone.
