@@ -647,3 +647,42 @@ landscape to see the full left panel.
 **Single-flight race (known 0.2.0-rc.2 bug):** If sessions load but the list
 shows empty rows, restart dsh (`dsh-start`) and fully reload the browser tab
 (close and re-open the URL, not just refresh).
+
+---
+
+## Roadblock 22 — Missing UI elements: nav toggle, file panel button (2026-10-15)
+
+### Symptoms reported
+- No sidebar/nav toggle button left of the session name
+- No right-side file panel / file opener button
+- These worked in DSH 0.1.5-alpha.1
+
+### Root cause
+`dsh-web-mobile` (version 2.4.1) provides BOTH buttons via `MobileNavToggle`
+component injected into `conversation.session.header.actions` slot. It was NOT
+loading because its `peerDependencies` caps at `< 0.2.0`, causing DSH 0.2.0 to
+reject it as incompatible before it even starts.
+
+**These are NOT new 0.2.0 UI features — they were provided by dsh-web-mobile in
+0.1.5 too and remained the same. The plugin just wasn't being allowed to run.**
+
+### Fix
+```bash
+dsh plugin --profile web allow-version dsh-web-mobile@2.4.1 \
+  --dsh-version 0.2.0-rc.2 --accept-risk
+```
+
+After this, `dsh-web-mobile` activates and contributes:
+1. **Sidebar toggle** (left panel, hamburger-style) — left of session name
+2. **Files button** (folder icon) — opens right file panel (`data-sidebar-right-expand`)
+
+The right-side file panel itself is provided by `dsh-client-ui-sidebar-right`
+(a built-in DSH package, always present). The **open button for it** is
+rendered inside `headerCorner` which desktop CSS hides — the mobile plugin
+clicks it programmatically via `[data-sidebar-right-expand]`.
+
+### vision-router: pending (waiting for service: settings/settingsScope)
+The client-side bundle of `dsh-vision-router@2.2.1` injects `['settingsScope', ...]`
+(required). In 0.2.0 the client context doesn't expose `settingsScope`. Fixed by
+making the injection **optional** (`?settingsScope`), which lets the plugin
+activate even without settings, using `(ctx.settingsScope ?? ctx.settings)?.bind(...)`.

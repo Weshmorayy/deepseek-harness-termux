@@ -352,3 +352,36 @@ javascript:(function(){Object.keys(localStorage).filter(k=>k.startsWith('dsh.'))
 Navigate to DSH, then tap ⋮ → Bookmarks → "Clear DSH Storage".
 
 Or: tap the lock/tune icon in address bar → Site settings → Clear & reset.
+
+---
+
+## Missing UI elements fix (2026-10-15)
+
+### Symptoms
+Nav toggle button and file panel button missing from session header.
+These worked in 0.1.5 — provided by `dsh-web-mobile`, not new 0.2.0 features.
+
+### Root cause
+`dsh-web-mobile@2.4.1` has `peerDependencies` capped at `< 0.2.0`. DSH 0.2.0
+silently blocks it as incompatible. Both UI buttons (`MobileNavToggle` component)
+are only injected by this plugin.
+
+### Fix (run after every DSH upgrade)
+```bash
+dsh plugin --profile web allow-version dsh-web-mobile@2.4.1 \
+  --dsh-version 0.2.0-rc.2 --accept-risk
+
+dsh plugin --profile web allow-version dsh-vision-router@2.2.1 \
+  --dsh-version 0.2.0-rc.2 --accept-risk
+```
+
+### vision-router client-side pending fix
+```bash
+VRCLIENT="$HOME/.dsh/profiles/web/node_modules/dsh-vision-router/lib/client.js"
+sed -i "s/exports\.inject = \['settingsScope'/exports.inject = ['?settingsScope'/" "$VRCLIENT"
+sed -i "s/ctx\.settingsScope\.bind/(ctx.settingsScope ?? ctx.settings)?.bind/g" "$VRCLIENT"
+```
+
+Also patch these files the same way:
+- `dsh-vision-router/lib/vision-routing-settings-prelude.js`
+- `dsh-vision-router/lib/structured-flow-hardening.js`
