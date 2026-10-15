@@ -1,0 +1,26 @@
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -357,14 +357,17 @@
+ async function syncDirectory(path) {
+ 	/* v8 ignore next -- Windows cannot open directory handles; NTFS metadata journaling owns entry durability there. */
+ 	if (process.platform === "win32") return;
+-	/* v8 ignore start -- Windows cannot exercise directory fsync; POSIX behavior tests enforce this peer. */
+-	const handle = await open(path, constants.O_RDONLY);
++	/* [Termux/android-arm64] system-owned ancestors (/data/data...) deny O_RDONLY; skip their fsync instead of failing the write (Roadblock 14, re-applied for 0.2.0). */
+ 	try {
+-		await handle.sync();
+-	} finally {
+-		await handle.close();
++		const handle = await open(path, constants.O_RDONLY);
++		try {
++			await handle.sync();
++		} finally {
++			await handle.close();
++		}
++	} catch (error) {
++		if (!(error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM"))) throw error;
+ 	}
+-	/* v8 ignore stop */
+ }
+ /**
+ * Create one private directory tree and persist every ancestor entry up to a

@@ -397,6 +397,9 @@ apply_patch "$REPO_DIR/patches/05-host-directory-picker-native-android.patch" "$
 apply_patch "$REPO_DIR/patches/06-workspace-archive-skip-session-known-check.patch" "$DSH_PKGS/dsh-workspace" || true
 apply_patch "$REPO_DIR/patches/07-sandbox-local-proot-runner.patch"           "$DSH_PKGS/dsh-sandbox-local" || true
 apply_patch "$REPO_DIR/patches/08-dsh-tool-fs-search-android-rg.patch"         "$DSH_PKGS/dsh-tool-fs-search" || true
+apply_patch "$REPO_DIR/patches/10-fs-local-link-rename.patch"                  "$DSH_PKGS/dsh-fs-local" || true
+apply_patch "$REPO_DIR/patches/11-attachment-local-android-durability.patch"   "$DSH_PKGS/dsh-attachment-local" || true
+apply_patch "$REPO_DIR/patches/12-attachment-local-link-rename.patch"          "$DSH_PKGS/dsh-attachment-local" || true
 
 # ripgrep platform-package shim: @vscode/ripgrep resolves
 # @vscode/ripgrep-${platform}-${arch}, which for Termux is

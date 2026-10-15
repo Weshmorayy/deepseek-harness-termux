@@ -1,0 +1,23 @@
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -543,9 +543,17 @@
+ 		try {
+ 			await link(staged.path, target);
+ 		} catch (error) {
+-			/* v8 ignore next -- Private same-filesystem directories make EEXIST the only recoverable link race. */
+-			if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+-			if (await digestFile(target) !== staged.sha256) throw new AttachmentError("Stored attachment failed integrity verification.", "ATTACHMENT_CORRUPT");
++			// [Termux/android-arm64] link() is denied on the app data partition; rename fallback preserves the digest-verified semantics (Roadblock 14, re-applied for 0.2.0).
++			if (error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM")) {
++				const exists = await lstat(target).then(() => true, () => false);
++				if (exists) {
++					if (await digestFile(target) !== staged.sha256) throw new AttachmentError("Stored attachment failed integrity verification.", "ATTACHMENT_CORRUPT");
++				} else await rename(staged.path, target);
++			} else {
++				/* v8 ignore next -- Private same-filesystem directories make EEXIST the only recoverable link race. */
++				if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
++				if (await digestFile(target) !== staged.sha256) throw new AttachmentError("Stored attachment failed integrity verification.", "ATTACHMENT_CORRUPT");
++			}
+ 		}
+ 		await unlink(staged.path);
+ 		await chmod(target, 256);

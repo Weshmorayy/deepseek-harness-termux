@@ -1,0 +1,14 @@
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -550,7 +550,10 @@
+ 		if (createIfAbsent !== void 0) try {
+ 			await linkFile(tempPath, absolutePath);
+ 		} catch (error) {
+-			await throwGuardedCreateFailure(error, absolutePath, createIfAbsent.displayPath, inspectPublicationTarget);
++			// [Termux/android-arm64] hard links are denied (EACCES/EPERM) on the app data
++			// partition; fall back to rename (Roadblock 15, re-applied for 0.2.0).
++			if (error?.code === "EACCES" || error?.code === "EPERM") await rename(tempPath, absolutePath);
++			else await throwGuardedCreateFailure(error, absolutePath, createIfAbsent.displayPath, inspectPublicationTarget);
+ 		}
+ 		else if (platform === "win32" && mode !== void 0) try {
+ 			await replaceFile(absolutePath, tempPath);
