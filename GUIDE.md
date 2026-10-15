@@ -590,3 +590,60 @@ Tap the lock/tune icon in the address bar → **Site settings** → **Clear & re
 **Option C — Full browser clear**
 ⋮ → Settings → Privacy and security → Delete browsing data → Site data → Delete
 (clears all sites, not just DSH)
+
+---
+
+## Roadblock 21 — Bad `settingsScope` alias broke `dsh-settings` (2026-10-15)
+
+### What happened
+Attempting to add a `ctx.settingsScope` backward-compat alias inside the
+`SettingsForms` constructor failed because cordis guards property access on
+the context object — accessing `ctx.settingsScope` without it being in the
+`inject` array throws:
+
+```
+Error: cannot get property "settingsScope" without inject
+```
+
+The `Object.defineProperty(ctx, 'settingsScope', ...)` patch was reverted.
+
+### Actual correct fix
+The only correct fix is on the **consumer side** (vision-router), not the
+provider side (dsh-settings). Since `dsh-settings` registers as `"settings"`
+and vision-router's `inject` listed `"settingsScope"`, change the inject:
+
+```diff
+-exports.inject = ['settingsScope', 'slots', 'locale', 'sessions', 'remote']
++exports.inject = ['settings', 'slots', 'locale', 'sessions', 'remote']
+```
+
+And guard the one direct `ctx.settingsScope` call:
+```diff
+-const localScope = ctx.settingsScope.bind({ namespace: 'vision-router' })
++const localScope = (ctx.settingsScope ?? ctx.settings)?.bind({ namespace: 'vision-router' })
+```
+
+This was already applied to `dsh-vision-router/lib/client.js` in Roadblock 20.
+The `dsh-settings` revert restores it to stock.
+
+### DSH 0.2.0 Web UI — intentional changes from 0.1.5
+
+The sidebar and layout ARE different in 0.2.0 (not a bug, not localStorage):
+
+| Element | 0.1.5 | 0.2.0 |
+|---|---|---|
+| Left nav | Session list rail | Collapsible workspace panel |
+| Right panel | n/a | File preview / context sidebar |
+| Session title bar | DeepSeek logo left of name | Workspace switcher toggle |
+| Settings | Flat `settings.yaml` | Per-plugin settings pages |
+| Token required | No (open access) | Yes (every request needs `?token=`) |
+
+**The "DeepSeek button" / home button** you remember from 0.1.5 is now the
+**workspace switcher panel toggle** in 0.2.0 — it expands/collapses the left
+session list. On mobile (`dsh-web-mobile`, < 1024px) it's hidden until you
+interact with the overlay. Tap the hamburger/≡ icon if visible, or rotate to
+landscape to see the full left panel.
+
+**Single-flight race (known 0.2.0-rc.2 bug):** If sessions load but the list
+shows empty rows, restart dsh (`dsh-start`) and fully reload the browser tab
+(close and re-open the URL, not just refresh).
