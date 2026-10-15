@@ -562,6 +562,83 @@ else
     echo "  [SKIP] node-addon-require-builtin android-arm64 shim already present."
 fi
 
+# 5e. flock.js android-arm64 patch (dsh 0.2.x).
+#
+# @deepseek-ai/node-addon-system/lib/flock.js throws "flock is not supported
+# on android-arm64" because it only allows 'linux' and 'darwin'. Android runs
+# a Linux kernel so flock(2) works fine; the check is too narrow.
+# This patch: (1) maps 'android' → 'linux' for addon resolution,
+# (2) catches missing native binary and falls back to a no-op mock.
+# The mock always grants the lock (tryLock cb(0)) — safe for single-user
+# Termux where concurrent session writers are not a concern.
+_FLOCK_JS="$DSH_PKGS/node-addon-system/lib/flock.js"
+if [ -f "$_FLOCK_JS" ] && grep -q "android" "$_FLOCK_JS" 2>/dev/null; then
+    echo "  [SKIP] flock.js android patch already applied."
+elif [ -f "$_FLOCK_JS" ]; then
+    echo "  -> Patching flock.js for android-arm64..."
+    if apply_patch "$REPO_DIR/patches/09-node-addon-system-flock-android.patch" \
+            "$(dirname "$(dirname "$_FLOCK_JS")")" 2>/dev/null; then
+        echo "  [OK] flock.js patched via patch file."
+    else
+        # patch may not apply cleanly if the file changed; overwrite directly
+        cat > "$_FLOCK_JS" << 'FLOCKEOF'
+/** Lazy POSIX flock entry; importing it does not load a native addon. */
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { getSystemErrorName } from 'node:util';
+let binding;
+function loadBinding() {
+    if (binding)
+        return binding;
+    const { platform, arch } = process;
+    // Android runs a Linux kernel — flock() is available. Treat 'android' as
+    // 'linux' for addon resolution (Termux patch).
+    const effectivePlatform = platform === 'android' ? 'linux' : platform;
+    if (effectivePlatform !== 'linux' && effectivePlatform !== 'darwin') {
+        throw Object.assign(new Error(`flock is not supported on ${platform}-${arch}`), {
+            code: 'ERR_FLOCK_UNSUPPORTED_PLATFORM',
+            syscall: 'flock',
+        });
+    }
+    let filename = 'system.node';
+    if (effectivePlatform === 'linux') {
+        try {
+            const report = process.report.getReport();
+            filename = join(report.header.glibcVersionRuntime ? 'glibc' : 'musl', filename);
+        } catch {
+            filename = join('musl', filename);
+        }
+    }
+    const require = createRequire(import.meta.url);
+    // Try linux-arm64 binary; fall back to no-op mock if unavailable.
+    try {
+        const manifest = require.resolve(`@deepseek-ai/node-addon-system-${effectivePlatform}-${arch}/package.json`);
+        binding = require(join(dirname(manifest), 'bin', filename));
+    } catch {
+        binding = { tryLock: (_fd, cb) => cb(0) };
+    }
+    return binding;
+}
+export async function tryLockExclusive(fd) {
+    const errno = await new Promise((resolve) => {
+        loadBinding().tryLock(fd, resolve);
+    });
+    if (errno === 0)
+        return;
+    const code = getSystemErrorName(-errno);
+    throw Object.assign(new Error(`${code}: flock failed`), {
+        code,
+        errno,
+        syscall: 'flock',
+    });
+}
+FLOCKEOF
+        echo "  [OK] flock.js patched (direct overwrite)."
+    fi
+else
+    echo "  [SKIP] flock.js not found — skipping (may not exist in this dsh version)."
+fi
+
 # ── Step 6: Install sharp WebAssembly fallback ───────────────────────────────
 
 echo "==> [6/9] Installing sharp WebAssembly fallback..."

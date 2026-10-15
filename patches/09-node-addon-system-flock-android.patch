@@ -1,0 +1,43 @@
+--- a/lib/flock.js
++++ b/lib/flock.js
+@@ -6,9 +6,18 @@ let binding;
+ function loadBinding() {
+     if (binding)
+         return binding;
+     const { platform, arch } = process;
+-    if (platform !== 'linux' && platform !== 'darwin') {
++    // Android runs a Linux kernel — flock() is available. Treat 'android' as
++    // 'linux' for addon resolution (Termux patch).
++    const effectivePlatform = platform === 'android' ? 'linux' : platform;
++    if (effectivePlatform !== 'linux' && effectivePlatform !== 'darwin') {
+         throw Object.assign(new Error(`flock is not supported on ${platform}-${arch}`), {
+             code: 'ERR_FLOCK_UNSUPPORTED_PLATFORM',
+             syscall: 'flock',
+         });
+     }
+     let filename = 'system.node';
+-    if (platform === 'linux') {
+-        // Node's report types omit the libc field supplied by Linux reports.
+-        const report = process.report.getReport();
+-        filename = join(report.header.glibcVersionRuntime ? 'glibc' : 'musl', filename);
++    if (effectivePlatform === 'linux') {
++        try {
++            const report = process.report.getReport();
++            filename = join(report.header.glibcVersionRuntime ? 'glibc' : 'musl', filename);
++        } catch {
++            filename = join('musl', filename);
++        }
+     }
+     const require = createRequire(import.meta.url);
+-    const manifest = require.resolve(`@deepseek-ai/node-addon-system-${platform}-${arch}/package.json`);
+-    binding = require(join(dirname(manifest), 'bin', filename));
++    // Try linux-arm64; if no native binary exists for android-arm64, use a
++    // no-op mock so DSH boots (flock is for session file locking; safe to skip).
++    try {
++        const manifest = require.resolve(`@deepseek-ai/node-addon-system-${effectivePlatform}-${arch}/package.json`);
++        binding = require(join(dirname(manifest), 'bin', filename));
++    } catch {
++        binding = { tryLock: (_fd, cb) => cb(0) };
++    }
+     return binding;
+ }
