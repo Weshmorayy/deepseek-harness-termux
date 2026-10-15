@@ -729,3 +729,44 @@ Files patched:
 
 `structured-flow-hardening.js` uses a local variable named `settingsScope` — that's
 an internal variable, not a cordis service access, so it's left alone.
+
+---
+
+## Roadblock 24 — dsh-web-mobile missing sessionLogDownload/workspaces (2026-10-15)
+
+### Symptom
+Nav toggle + files button still absent. dsh-web-mobile appeared in config but
+never actually activated — its inject included services not in the client bundle.
+
+### Root cause (confirmed by reading cordis client runner service catalog)
+`sessionLogDownload` and `workspaces` are **not provided** in the browser client
+context (confirmed: 0 matches in dsh-web-app startup.js). Both are server-side
+or separately-mounted services. Without them in the client context, the fiber
+stays INACTIVE and the `MobileNavToggle` component is never injected.
+
+### Fix
+Remove both from the client inject array. Guard their direct ctx. usages via
+`ctx.reflect._getImpl(name, true)?.value?.method?.()` which is safe (returns
+undefined) when the service isn't present.
+
+```diff
+-exports.inject = ['slots', 'layout', 'locale', 'sessionLogDownload', 'sessions', 'workspaces']
++exports.inject = ['slots', 'layout', 'locale', 'sessions']
+```
+
+```diff
+-downloadSessionLog: (sessionId) => ctx.sessionLogDownload.download(sessionId),
++downloadSessionLog: (sessionId) => ctx.reflect._getImpl('sessionLogDownload', true)?.value?.download?.(sessionId),
+```
+
+```diff
+-const workspaces = ctx.workspaces.list.getSnapshot();
++const workspaces = (() => { try { return ctx.reflect._getImpl('workspaces', true)?.value?.list?.getSnapshot() ?? { archivedSessionIds: [] } } catch(e) { return { archivedSessionIds: [] } } })();
+```
+
+### File preview (clicking file cards does nothing)
+The file cards in the chat trigger `setExpanded(sessionId, true)` on the right
+sidebar controller, which calls `layout.openRightbar()`. This requires
+`dsh-web-mobile` to be active (it provides the button). Once the plugin
+activates, clicking the files icon in the header will open the right panel.
+The panel renders the file preview via `dsh-client-ui-sidebar-documentpreview`.
