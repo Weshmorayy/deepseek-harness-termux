@@ -401,3 +401,15 @@ dsh plugin --profile web allow-version dsh-web-mobile@3.1.0 \
 
 Version 3.1.0 adds explicit 0.2.0 peerDep support and fixes the inject
 (removes `workspaces` which was not a cordis service — it's a slot hook).
+
+---
+
+## install.sh idempotency & native shim fixes (2026-10-15)
+
+### Issues & Solutions
+1. **koffi prebuilt path in install.sh**:
+   When using `@koromix/koffi-android-arm64@3.3.0`, ensure the prebuilt binary is copied to `$KOFFI_DIR/build/koffi/android_arm64/koffi.node` or checked via `$_KOFFI_PREBUILT_NODE`.
+2. **Preventing npm from wiping shims**:
+   Avoid running bare `npm install` inside `$DSH_DIR` if unmanaged packages (like `node-addon-require-builtin-android-arm64`) exist in `node_modules`. Always guard optional packages (e.g. `@img/sharp-wasm32`) with directory presence checks.
+3. **Re-asserting shims**:
+   `install.sh` ensures `node-addon-require-builtin-android-arm64` exists before Step 8 verification.

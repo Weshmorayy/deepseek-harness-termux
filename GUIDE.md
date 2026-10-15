@@ -803,3 +803,31 @@ After this update:
 The right-sidebar expand button (`[data-sidebar-right-expand]`) is hidden by
 desktop CSS. `dsh-web-mobile@3.1.0` programmatically clicks it via
 `openFilesPanel()` triggered by the files button in the session header.
+
+---
+
+## Roadblock 26 — `install.sh` native module check loop & npm pruning shims (2026-10-15)
+
+### Symptoms
+Re-running `install.sh` resulted in:
+```
+  Native modules:
+    [OK] node-pty pty.node
+    [MISS] koffi android_arm64 koffi.node
+  [ERROR] Native modules are missing — the install is incomplete.
+```
+And subsequent `dsh-start` crashed with:
+```
+dsh: fatal uncaught exception: Error: dsh: host preparation failed: No usable native binding found for node-addon-require-builtin-android-arm64 (auto)
+```
+
+### Root causes
+1. **koffi output path mismatch**: On DSH 0.2.x / Android arm64, koffi 3.1.1 source compilation fails due to Bionic `statx` ABI incompatibility. Step 5a installed the prebuilt `koffi@3.3.0` + `@koromix/koffi-android-arm64@3.3.0`. The prebuilt binary is placed at `@koromix/koffi-android-arm64/android_arm64/koffi.node`, NOT `$KOFFI_DIR/build/koffi/android_arm64/koffi.node` (`$KOFFI_OUT`). Step 8 only checked `$KOFFI_OUT` and aborted the install script.
+2. **Unconditional `npm install` pruning shims**: Step 6 unconditionally ran `npm install @img/sharp-wasm32` in `$DSH_DIR` on every run. Running `npm install` without `--no-save` runs tree reconciliation and removes unmanaged packages from `node_modules`, which wiped out `node-addon-require-builtin-android-arm64` created in Step 5d.
+3. **Repeated failed rebuilds**: Step 5a did not test if koffi was already operational before re-attempting source compilation.
+
+### Fix
+1. **Step 5a**: Added `node -e "require('$KOFFI_DIR/index.js')"` check to skip rebuilding when koffi is already working, and auto-populated `$KOFFI_OUT` from the `@koromix` prebuilt.
+2. **Step 6**: Guarded sharp installation with `[ -d "$DSH_DIR/node_modules/@img/sharp-wasm32" ]` to skip redundant npm installs and prevent npm pruning.
+3. **Step 7**: Updated package detection from `dsh-mobile-nav` to `dsh-web-mobile|dsh-mobile-nav`.
+4. **Step 8**: Added an idempotent re-assertion for `node-addon-require-builtin-android-arm64`, updated koffi check to accept `@koromix` prebuilt, and added missing `case` mappings for patches 09–12.
