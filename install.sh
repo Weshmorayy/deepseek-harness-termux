@@ -443,13 +443,23 @@ fi
 # 5a. koffi — apply the statx() Android patch BEFORE compiling, then build.
 KOFFI_DIR="$DSH_DIR/node_modules/koffi"
 KOFFI_OUT="$KOFFI_DIR/build/koffi/android_arm64/koffi.node"
+_KOFFI_PREBUILT_NODE="$DSH_DIR/node_modules/@koromix/koffi-android-arm64/android_arm64/koffi.node"
 KOFFI_BUILD=false
-if apply_patch "$REPO_DIR/patches/koffi-statx.patch" "$KOFFI_DIR"; then
+KOFFI_NATIVE_OK=false
+
+if node -e "require('$KOFFI_DIR/index.js'); process.exit(0)" 2>/dev/null; then
+    echo "  [SKIP] koffi already built and functional."
+    KOFFI_NATIVE_OK=true
+    if [ ! -f "$KOFFI_OUT" ] && [ -f "$_KOFFI_PREBUILT_NODE" ]; then
+        mkdir -p "$(dirname "$KOFFI_OUT")"
+        cp "$_KOFFI_PREBUILT_NODE" "$KOFFI_OUT" 2>/dev/null || true
+    fi
+elif apply_patch "$REPO_DIR/patches/koffi-statx.patch" "$KOFFI_DIR"; then
     KOFFI_BUILD=true
-elif [ ! -f "$KOFFI_OUT" ]; then
+elif [ ! -f "$KOFFI_OUT" ] && [ ! -f "$_KOFFI_PREBUILT_NODE" ]; then
     KOFFI_BUILD=true
 fi
-KOFFI_NATIVE_OK=false
+
 if $KOFFI_BUILD; then
     echo "  -> Building koffi native lib (this takes a while)..."
     # Scrub CFLAGS/CXXFLAGS/CPPFLAGS: a user-level -D__ANDROID_API__ or other
@@ -465,8 +475,10 @@ if $KOFFI_BUILD; then
         echo "  away). Trying prebuilt fallback via npm..."
     fi
 else
-    echo "  [SKIP] koffi already built with patched sources."
-    KOFFI_NATIVE_OK=true
+    if ! $KOFFI_NATIVE_OK; then
+        echo "  [SKIP] koffi already built with patched sources."
+        KOFFI_NATIVE_OK=true
+    fi
 fi
 
 # koffi prebuilt fallback (dsh 0.2.x): koffi 3.1.1 bundled in dsh 0.2.x has
@@ -481,6 +493,10 @@ if ! $KOFFI_NATIVE_OK; then
         if node -e "require('$KOFFI_DIR/index.js'); process.exit(0)" 2>/dev/null; then
             echo "  [OK] koffi prebuilt (3.3.0 android-arm64) loaded successfully."
             KOFFI_NATIVE_OK=true
+            if [ -f "$_KOFFI_PREBUILT_NODE" ]; then
+                mkdir -p "$(dirname "$KOFFI_OUT")"
+                cp "$_KOFFI_PREBUILT_NODE" "$KOFFI_OUT" 2>/dev/null || true
+            fi
         else
             echo "  [ERROR] koffi 3.3.0 installed but failed to load — see debug:"
             node -e "require('$KOFFI_DIR/index.js')" 2>&1 | head -10
@@ -492,6 +508,7 @@ if ! $KOFFI_NATIVE_OK; then
         exit 1
     fi
 fi
+
 
 
 
@@ -645,7 +662,9 @@ fi
 # ── Step 6: Install sharp WebAssembly fallback ───────────────────────────────
 
 echo "==> [6/9] Installing sharp WebAssembly fallback..."
-if (cd "$DSH_DIR" && npm install @img/sharp-wasm32 > /dev/null 2>&1); then
+if [ -d "$DSH_DIR/node_modules/@img/sharp-wasm32" ]; then
+    echo "  [SKIP] @img/sharp-wasm32 already installed."
+elif (cd "$DSH_DIR" && npm install --no-save --ignore-scripts @img/sharp-wasm32 > /dev/null 2>&1); then
     echo "  [OK] @img/sharp-wasm32 installed."
 else
     echo "  [WARN] Could not install @img/sharp-wasm32 (may already be present)."
@@ -675,13 +694,36 @@ if ! cmd_exists pnpm; then
     fi
 fi
 
-if [ -f "$WEB_PROFILE_DIR/package.json" ] && grep -q "dsh-mobile-nav" "$WEB_PROFILE_DIR/package.json" 2>/dev/null; then
+if [ -f "$WEB_PROFILE_DIR/package.json" ] && grep -Eq "dsh-web-mobile|dsh-mobile-nav" "$WEB_PROFILE_DIR/package.json" 2>/dev/null; then
     echo "  [SKIP] dsh-web-mobile already installed"
 elif node --expose-internals "$DSH_DIR/lib/bin.js" plugin --profile web add github:mexiaosqwq/dsh-web-mobile 2>&1; then
     echo "  [OK] dsh-web-mobile installed"
 else
     echo "  [WARN] dsh plugin add failed. Install it manually later with:"
     echo "    $PLUGIN_CMD"
+fi
+
+# Re-ensure node-addon-require-builtin android-arm64 JS shim in case any npm run wiped it
+if [ ! -f "$_NAR_SHIM/index.js" ]; then
+    echo "  -> Ensuring node-addon-require-builtin android-arm64 JS shim..."
+    mkdir -p "$_NAR_SHIM"
+    cat > "$_NAR_SHIM/package.json" << 'SHIMJSON'
+{
+  "name": "node-addon-require-builtin-android-arm64",
+  "version": "0.1.9",
+  "description": "Termux JS shim — uses --expose-internals; no native binary needed",
+  "main": "index.js"
+}
+SHIMJSON
+    cat > "$_NAR_SHIM/index.js" << 'SHIMJS'
+'use strict';
+function requireBuiltin(id) { return require(id); }
+function isAllowedInternalId() { return true; }
+function getNativeBindingInfo() {
+  return { mode: 'unrestricted', product: 'require-builtin', backend: 'napi', abi: 'napi-v9' };
+}
+module.exports = { requireBuiltin, isAllowedInternalId, getNativeBindingInfo };
+SHIMJS
 fi
 
 # ── Step 8: Verify environment ───────────────────────────────────────────────
@@ -698,7 +740,11 @@ else
     echo "    [MISS] node-pty pty.node"
     _NATIVE_MISSING=true
 fi
-if [ -f "$KOFFI_OUT" ]; then
+if [ -f "$KOFFI_OUT" ] || [ -f "$_KOFFI_PREBUILT_NODE" ]; then
+    if [ ! -f "$KOFFI_OUT" ] && [ -f "$_KOFFI_PREBUILT_NODE" ]; then
+        mkdir -p "$(dirname "$KOFFI_OUT")"
+        cp "$_KOFFI_PREBUILT_NODE" "$KOFFI_OUT" 2>/dev/null || true
+    fi
     echo "    [OK] koffi android_arm64 koffi.node"
 else
     echo "    [MISS] koffi android_arm64 koffi.node"
@@ -727,6 +773,10 @@ for patch_file in "$REPO_DIR"/patches/*.patch; do
         workspace-archive-skip-session-known-check) dir="$DSH_PKGS/dsh-workspace" ;;
         sandbox-local-proot-runner)                 dir="$DSH_PKGS/dsh-sandbox-local" ;;
         dsh-tool-fs-search-android-rg)              dir="$DSH_PKGS/dsh-tool-fs-search" ;;
+        node-addon-system-flock-android)            dir="$DSH_PKGS/node-addon-system" ;;
+        fs-local-link-rename)                       dir="$DSH_PKGS/dsh-fs-local" ;;
+        attachment-local-android-durability)        dir="$DSH_PKGS/dsh-attachment-local" ;;
+        attachment-local-link-rename)               dir="$DSH_PKGS/dsh-attachment-local" ;;
         koffi-statx)                                dir="$DSH_DIR/node_modules/koffi" ;;
         *) dir="" ;;
     esac
