@@ -526,3 +526,67 @@ Run once to permanently exempt it:
 dsh plugin --profile web allow-version dsh-vision-router@2.2.1 \
   --dsh-version 0.2.0-rc.2 --accept-risk
 ```
+
+---
+
+## Roadblock 20 — `vision-router` pending on `settingsScope` service (2026-10-15)
+
+### Symptom
+```
+Failed to load plugins
+web boot: 1 entry did not activate
+dsh-vision-router: pending (waiting for service: settingsScope)
+```
+
+### Root cause
+DSH 0.1.7 renamed the `settingsScope` cordis service to `settings`.
+`dsh-vision-router@2.2.1` was built against the old name — its client
+bundle injects `['settingsScope', 'slots', 'locale', 'sessions', 'remote']`.
+Since `settingsScope` no longer exists as a named service, the fiber hangs
+waiting for it and never activates.
+
+Modlens also tries `scope.settings.register()` in its settings card; this
+throws because `settings.register` was also removed (the 0.2.0 settings API
+is `settings.configure()`). Modlens already wraps this in `try/catch`, so
+it degrades cleanly.
+
+### Fix A — `dsh-settings` backward-compat alias
+
+After `super(ownerContext, "settings")`, add:
+```js
+if (!ctx.settingsScope) {
+  Object.defineProperty(ctx, 'settingsScope', { get: () => this, configurable: true });
+}
+```
+This makes `ctx.settingsScope` resolve to the settings service instance so
+`ctx.inject(['settingsScope'], ...)` fires normally.
+
+File: `.../dsh-settings/lib/index.js` constructor, after the `super()` call.
+
+### Fix B — `vision-router/lib/client.js` inject array
+
+```diff
+-exports.inject = ['settingsScope', 'slots', 'locale', 'sessions', 'remote']
++exports.inject = ['settings', 'slots', 'locale', 'sessions', 'remote']
+```
+
+And any direct `ctx.settingsScope.` calls → `(ctx.settingsScope ?? ctx.settings)?.`
+
+Files patched: `client.js`, `vision-routing-settings-prelude.js`, `structured-flow-hardening.js`
+
+### Clearing localStorage on Chrome for Android (no DevTools)
+
+**Option A — Bookmarklet (recommended)**
+1. In Chrome, bookmark any page
+2. Edit the bookmark → change the URL to:
+   ```
+   javascript:(function(){Object.keys(localStorage).filter(k=>k.startsWith('dsh.')).forEach(k=>localStorage.removeItem(k));location.reload();})();
+   ```
+3. Open your DSH URL, tap ⋮ → Bookmarks → tap "Clear DSH Storage"
+
+**Option B — Chrome site settings**
+Tap the lock/tune icon in the address bar → **Site settings** → **Clear & reset**
+
+**Option C — Full browser clear**
+⋮ → Settings → Privacy and security → Delete browsing data → Site data → Delete
+(clears all sites, not just DSH)

@@ -314,3 +314,41 @@ See `patches/09-node-addon-system-flock-android.patch` and `install.sh` step 5e.
 dsh plugin --profile web allow-version dsh-vision-router@2.2.1 \
   --dsh-version 0.2.0-rc.2 --accept-risk
 ```
+
+---
+
+## vision-router pending fix (2026-10-15)
+
+### Root cause
+DSH 0.1.7+ renamed service `settingsScope` → `settings`. `dsh-vision-router@2.2.1`
+was built for the old name and hangs on boot waiting for a service that will
+never arrive, causing "1 entry did not activate".
+
+### Fixes (apply after each DSH upgrade)
+
+**1. dsh-settings backward-compat alias:**
+```bash
+DSH_SETTINGS="$(npm root -g)/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-settings/lib/index.js"
+# After super(ownerContext, "settings"), add the alias — see GUIDE.md Roadblock 20
+```
+
+**2. vision-router inject patch:**
+```bash
+VRCLIENT="$HOME/.dsh/profiles/web/node_modules/dsh-vision-router/lib/client.js"
+sed -i "s/exports\.inject = \['settingsScope',/exports.inject = ['settings',/" "$VRCLIENT"
+sed -i "s/ctx\.settingsScope\.bind/(ctx.settingsScope ?? ctx.settings)?.bind/g" "$VRCLIENT"
+for f in vision-routing-settings-prelude.js structured-flow-hardening.js; do
+  sed -i "s/ctx\.settingsScope\b/(ctx.settingsScope ?? ctx.settings)/g" \
+    "$HOME/.dsh/profiles/web/node_modules/dsh-vision-router/lib/$f"
+done
+```
+
+### Clear localStorage on Chrome for Android (no F12)
+
+Bookmarklet — create a bookmark with this URL:
+```
+javascript:(function(){Object.keys(localStorage).filter(k=>k.startsWith('dsh.')).forEach(k=>localStorage.removeItem(k));location.reload();})();
+```
+Navigate to DSH, then tap ⋮ → Bookmarks → "Clear DSH Storage".
+
+Or: tap the lock/tune icon in address bar → Site settings → Clear & reset.
