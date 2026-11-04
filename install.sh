@@ -400,6 +400,34 @@ apply_patch "$REPO_DIR/patches/08-dsh-tool-fs-search-android-rg.patch"         "
 apply_patch "$REPO_DIR/patches/10-fs-local-link-rename.patch"                  "$DSH_PKGS/dsh-fs-local" || true
 apply_patch "$REPO_DIR/patches/11-attachment-local-android-durability.patch"   "$DSH_PKGS/dsh-attachment-local" || true
 apply_patch "$REPO_DIR/patches/12-attachment-local-link-rename.patch"          "$DSH_PKGS/dsh-attachment-local" || true
+node "$REPO_DIR/patches/13-fetch-blob-mtime-tolerance.js" || true
+node "$REPO_DIR/patches/14-android-image-pick-eager-snapshot.js" || true
+# 15: the SECOND hard-link site in dsh-attachment-local (publishImmutableAlias).
+# Patch 12 covered only publishStagedObject, so publishing the display-name
+# alias still rethrew EACCES as "Unable to persist attachment." — every new
+# attachment failed. Falls back to copyFile (not rename: the source object is
+# owned by the originating session and must survive).
+node "$REPO_DIR/patches/15-attachment-local-alias-link-copy.js" || true
+# 16: the cleanup unlink that follows patch 12's rename fallback. `rename` MOVES
+# the staging file, so the unconditional `unlink(staged.path)` after it raised
+# ENOENT and surfaced as "Unable to persist attachment." — but ONLY on the branch
+# that renames, i.e. for genuinely new content. Already-stored content took the
+# `exists` branch and worked, which is the whole "some images work, some don't"
+# pattern (not a byte cap). Routes cleanup through removeTemporary(), which
+# tolerates the missing staging name.
+node "$REPO_DIR/patches/16-attachment-local-staged-unlink-after-rename.js" || true
+# 17: dsh-better-sidebar mobile "dead space below the composer". Confirmed by
+# A/B (disabling the plugin removed the gap). The plugin writes
+# `--dsh-sidebar-height` as `bottomHeight + keyboardInset` and its injected CSS
+# spends it as `margin-bottom` on the centre column; on Android the final
+# visualViewport event as the keyboard closes can be missed, leaving the inset —
+# and therefore a reserved band — stuck. Gates the inset on a focused editable,
+# adds focusin/focusout/resize/orientationchange + a 250 ms re-measure, clamps
+# the push. Target lives in the PROFILE, not the DSH package.
+node "$REPO_DIR/patches/17-better-sidebar-mobile-dead-space.js" || true
+# Patch 18: force bottomOpen=false in sanitizeState() when all tabs were pruned on
+# hydration from localStorage — eliminates the persistent ~220px fresh-load dead space.
+node "$REPO_DIR/patches/18-better-sidebar-bottomopen-hydration.js" || true
 
 # ripgrep platform-package shim: @vscode/ripgrep resolves
 # @vscode/ripgrep-${platform}-${arch}, which for Termux is
@@ -790,6 +818,25 @@ for patch_file in "$REPO_DIR"/patches/*.patch; do
         echo "    [SKIP] $name (package not found)"
     fi
 done
+
+# JS-based patches: verified by marker strings in the target files
+_js_patch_check() {
+    local label="$1" file="$2" marker="$3"
+    if [ -f "$file" ] && grep -q "$marker" "$file" 2>/dev/null; then
+        echo "    [APPLIED] $label"
+    elif [ -f "$file" ]; then
+        echo "    [NOT APPLIED] $label"
+    else
+        echo "    [SKIP] $label (target not found)"
+    fi
+}
+_PROFILE_NM="$HOME/.dsh/profiles/web/node_modules"
+_js_patch_check "13-fetch-blob-mtime-tolerance"       "$_PROFILE_NM/dsh-attachment-local/lib/index.js"  "mtime-tolerance"
+_js_patch_check "14-android-image-pick-eager-snapshot" "$_PROFILE_NM/dsh-attachment-local/lib/client.js" "eager-snapshot"
+_js_patch_check "15-attachment-local-alias-link-copy"  "$_PROFILE_NM/dsh-attachment-local/lib/index.js"  "alias-link-copy"
+_js_patch_check "16-attachment-local-staged-unlink"    "$_PROFILE_NM/dsh-attachment-local/lib/index.js"  "staged-unlink"
+_js_patch_check "17-better-sidebar-mobile-dead-space"  "$_PROFILE_NM/dsh-better-sidebar/lib/client.js"   "mobile-dead-space"
+_js_patch_check "18-better-sidebar-bottomopen-hydrate" "$_PROFILE_NM/dsh-better-sidebar/lib/client.js"   "bottomopen-hydration"
 
 # ── Step 9: Runtime smoke test ───────────────────────────────────────────────
 echo "==> [9/9] Runtime smoke test..."
