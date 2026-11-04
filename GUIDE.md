@@ -285,7 +285,18 @@ The image route works because discovery appends `/models` to whatever base URL i
 - **Effort menus** must come from each model's own `reasoning.supported_efforts` ladder. Space Bunny Alpha reports `mandatory: true`, meaning the API *rejects* `effort: "none"` — a config offering an `off` level fails at request time. OpenRouter's `"none"` maps to pi-ai's `off` level, and `max`/`xhigh` must be offered where listed.
 
 ### Maintenance
-`dsh-start` refreshes automatically (≤ once per 12h, `--force-refresh` to override). The generator parses its own output with dsh's `js-yaml` and **refuses to write** if invalid, writes atomically via `rename(2)`, and never blocks startup on a dead network. Backups: `~/.dsh/settings.yaml.bak-*`.
+`dsh-start` refreshes automatically (≤ once per 12h, `--force` to override).
+The generator parses its own output with dsh's `js-yaml` and **refuses to write**
+if invalid, writes atomically via `rename(2)`, and never blocks startup on a dead
+network.
+
+**DSH 0.2.0 dual-target refresh** — the script writes to **both**:
+- `~/.dsh/settings.yaml.imported` — legacy base config
+- `~/.dsh/profiles/web/cordis.patch.yml` — the **active web profile** (what DSH
+  actually reads for the running UI). Absent on DSH 0.1.x; skipped gracefully.
+
+Backups are created before every write: `~/.dsh/settings.yaml.imported.bak-*`
+and `~/.dsh/profiles/web/cordis.patch.yml.bak-*`.
 
 > Note: DSH is a chat harness with no image-*generation* path. Pure generation models (seedream, flux.2, qwen-image) are served by `POST /api/v1/images/generations`, which DSH never calls — chat models that emit images (gemini-3.1-flash-image, gpt-5-image) do work.
 
@@ -831,3 +842,94 @@ dsh: fatal uncaught exception: Error: dsh: host preparation failed: No usable na
 2. **Step 6**: Guarded sharp installation with `[ -d "$DSH_DIR/node_modules/@img/sharp-wasm32" ]` to skip redundant npm installs and prevent npm pruning.
 3. **Step 7**: Updated package detection from `dsh-mobile-nav` to `dsh-web-mobile|dsh-mobile-nav`.
 4. **Step 8**: Added an idempotent re-assertion for `node-addon-require-builtin-android-arm64`, updated koffi check to accept `@koromix` prebuilt, and added missing `case` mappings for patches 09–12.
+
+---
+
+## Roadblock 27 — New stealth/crouton-alpha invisible in DSH model picker (2026-11-04)
+
+### Symptom
+`stealth/crouton-alpha` (and any other new OpenRouter model added since the last
+manual cordis edit) is absent from the DSH model selector in the web UI, even
+though it appears in `~/.dsh/settings.yaml.imported` after a refresh.
+
+### Root Cause
+DSH 0.2.0 reads the **web profile** (`~/.dsh/profiles/web/cordis.patch.yml`)
+for the running UI — `settings.yaml.imported` is only the legacy base config and
+is no longer consulted at runtime. `refresh-openrouter-models.mjs` wrote model
+lists exclusively to `settings.yaml.imported`, leaving `cordis.patch.yml`
+frozen at whatever it last contained from manual edits.
+
+The two files use **different YAML indentation**:
+
+| File | Provider-key indent | Model-entry base indent |
+|---|---|---|
+| `settings.yaml.imported` | 4 spaces | 8 spaces |
+| `cordis.patch.yml` | 6 spaces | 10 spaces |
+
+Because the script searched for `'    openrouter-extra:'` (4-space), it found
+the marker in `.imported` but silently found nothing in `cordis.patch.yml` and
+skipped it without error.
+
+### Fix — dual-target refresh (`refresh-openrouter-models.mjs`, 2026-11-04)
+
+The script now writes to **both** files on every successful refresh:
+
+1. **Added `CORDIS` constant** pointing to `~/.dsh/profiles/web/cordis.patch.yml`.
+2. **Added `cordisExtraBlock` / `cordisImageBlock` builders** using 6-space
+   provider-key indent and `render(m, '          ')` (10-space model base).
+3. **Added cordis splice pass** using `cAt = name => cLines.indexOf('      ' + name + ':')` (6-space) with the same `blockStart` / `iEnd` logic as the existing SETTINGS pass.
+4. **Added cordis validation**: parses the generated YAML, finds the `llm-pi-ai`
+   list entry, checks `config.providers.openrouter-extra.models.length` and
+   `openrouter-images.models.length`. Refuses to write on any failure.
+5. **Atomic write** via temp file + `rename(2)`, same as the SETTINGS path.
+6. **Graceful degradation**: if `CORDIS` is absent (DSH 0.1.x install), logs a
+   skip message and continues without error.
+
+Backups are written before every cordis update:
+`~/.dsh/profiles/web/cordis.patch.yml.bak-<timestamp>`
+
+### Verification
+```bash
+node ~/.dsh/refresh-openrouter-models.mjs --force
+# [openrouter] refreshed: 113 extra (43 with Effort) + 61 image (catalog serves 386)
+# [openrouter] cordis.patch.yml refreshed: 113 extra + 61 image
+
+grep "crouton-alpha" ~/.dsh/profiles/web/cordis.patch.yml
+# → id: "stealth/crouton-alpha"
+
+dsh --profile web --dump-config   # must exit 0
+```
+
+
+---
+
+## Roadblock 27 — Scroll dead space (better-sidebar, persistent)
+
+**Symptom:** A blank ~220px band below the conversation column on Chrome for Android. Persists on fresh page load. Confirmed: disabling `dsh-better-sidebar` removes the gap.
+
+**Root cause chain:**
+1. `dsh-better-sidebar` injects `#root [data-dsh-center-col] { margin-bottom: var(--dsh-sidebar-height, 0px) }` via a CSS constant. This reserves space for the bottom workbench.
+2. `--dsh-sidebar-height` is written by `writeGeometry()` in the React shell. It equals `bottomPushHeight(height) + keyboardInset` when `bottomOpen=true`, else 0.
+3. `bottomOpen` is hydrated from localStorage — if the user had it open previously, it stays true even after tabs are pruned (`sanitizeState()` didn't cross-check).
+4. Even when `bottomOpen` is legitimately true (open tab), the margin-bottom applies. But the bottom panel is `position:absolute;bottom:0` — it **overlays** the conversation and never contributes to in-flow layout. The `margin-bottom` is wasted dead space on mobile.
+
+**Patches applied:**
+- `17-better-sidebar-mobile-dead-space.js` — gate `keyboardInset` on a focused editable; add settle/focusout listeners (intermittent gap after typing)
+- `18-better-sidebar-bottomopen-hydration.js` — force `bottomOpen=false` in `sanitizeState()` when no tabs survive pruning (fresh-load gap with empty pane)
+- `19-better-sidebar-mobile-no-margin-push.js` — append `@media (max-width:820px) { #root [data-dsh-center-col] { margin-bottom: 0 !important } }` to the injected CSS constant (definitive fix: margin-bottom has no effect on mobile regardless of `bottomOpen`)
+
+**Better-sidebar also updated:** 0.26.0 → 0.26.1 (lag/interval fixes; patches re-applied after update).
+
+---
+
+## Roadblock 28 — memory-eternal distill config silently reverts
+
+**Symptom:** `captureProvider` and `captureModel` reset to `""` after plugin saves/UI restarts. All 47 memory cards accumulated as raw transcript fallback (`distill-failed`).
+
+**Resolution:** Replaced `memory-eternal@0.10.36` with `@shion-lab/dsh-plugin-memory@0.3.2`:
+- MemoryGuard blocks raw stack traces, diffs, API keys from storage
+- Clean Markdown storage at `~/.dsh/MEMORY.md` (no silent config revert)
+- 30-day exponential recency decay, frequency reinforcement
+- No distill LLM call → no token cost on capture
+
+`memory-eternal` disabled in `cordis.patch.yml`. New plugin registered as `shion-memory`.
