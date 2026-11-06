@@ -932,3 +932,33 @@ dsh --profile web --dump-config   # must exit 0
 - **Pluggable & Zero Waste:** No expensive distillation background token costs; structured multi-tier memory spaces.
 - **Config:** Managed via `dsh plugin --profile web add dsh-mnemon` with automatic bundle layer patching. `memory-eternal` is disabled.
 
+---
+
+## Roadblock 29 — Chrome for Android Viewport vs Firefox (Patch 20)
+
+**Symptom:** On Chrome for Android, a massive ~1000px black void appeared below the conversation column and composer. The user could scroll the entire app page up into empty space. On Firefox for Android, the issue did NOT occur.
+
+**Root cause:**
+1. Chromium defaults to `interactive-widget=resizes-visual` when unspecified. The software keyboard and browser URL bar shrink the visual viewport without shrinking the layout viewport. When retracting or navigating, Chromium fails to reset layout bounds, allowing `document.scrollingElement` (`html`/`body`) to scroll past the fixed app shell.
+2. Firefox for Android (GeckoView) defaults to resizing the layout viewport cleanly.
+3. Neither `html, body` nor `#root` had `overflow: hidden` or `overscroll-behavior: none`, allowing page-level overscroll.
+
+**Resolution (`patches/20-web-mobile-chrome-viewport-resizes-content.js`):**
+- Updated viewport meta in `index.html` and `dsh-web-mobile` to:
+  `width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content`
+- Enforced `overflow: hidden !important; overscroll-behavior: none !important; height: 100dvh !important;` on `html, body, #root` in `BASE_CSS`.
+- Added a passive window scroll listener clamping `window.scrollTo(0, 0)`.
+
+---
+
+## Roadblock 30 — Model Context Protocol Manager: dsh-mcp-manager
+
+**Symptom:** Built-in MCP client in DSH requires static YAML configurations and lacks a runtime visual UI to connect, disconnect, or configure remote/local MCP servers.
+
+**Resolution:** Installed and enabled **`dsh-mcp-manager@0.6.0`**:
+- Dedicated GUI in `Settings → MCP` in DSH Web UI.
+- Add, edit, test, enable, disable, and reconnect Model Context Protocol servers at runtime without restarting DSH.
+- Stored globally in `~/.dsh/mcp-servers.json`.
+- Registered as Cordis service in `cordis.patch.yml`.
+
+

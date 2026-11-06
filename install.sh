@@ -431,7 +431,10 @@ node "$REPO_DIR/patches/18-better-sidebar-bottomopen-hydration.js" || true
 # Patch 19: mobile-no-margin-push-v3 — on screens <=820px, force margin-bottom:0 on the
 # center column so --dsh-sidebar-height has zero layout effect. The bottom panel is
 # position:absolute (overlays) on all screen widths, so this never breaks desktop.
-node "$REPO_DIR/patches/19-better-sidebar-mobile-no-margin-push-v3.js" || true
+node "$REPO_DIR/patches/19-better-sidebar-mobile-no-margin-push.js" || true
+# Patch 20: chrome-viewport-resizes-content — force interactive-widget=resizes-content
+# and overflow:hidden on html/body/root to eliminate Chrome Android scroll void below composer.
+node "$REPO_DIR/patches/20-web-mobile-chrome-viewport-resizes-content.js" || true
 
 # ripgrep platform-package shim: @vscode/ripgrep resolves
 # @vscode/ripgrep-${platform}-${arch}, which for Termux is
@@ -841,7 +844,8 @@ _js_patch_check "15-attachment-local-alias-link-copy"  "$_PROFILE_NM/dsh-attachm
 _js_patch_check "16-attachment-local-staged-unlink"    "$_PROFILE_NM/dsh-attachment-local/lib/index.js"  "staged-unlink"
 _js_patch_check "17-better-sidebar-mobile-dead-space"  "$_PROFILE_NM/dsh-better-sidebar/lib/client.js"   "mobile-dead-space"
 _js_patch_check "18-better-sidebar-bottomopen-hydrate" "$_PROFILE_NM/dsh-better-sidebar/lib/client.js"   "bottomopen-hydration"
-_js_patch_check "19-better-sidebar-mobile-no-margin-push-v3" "$_PROFILE_NM/dsh-better-sidebar/lib/client.js" "mobile-no-margin-push-v3"
+_js_patch_check "19-better-sidebar-mobile-no-margin-push" "$_PROFILE_NM/dsh-better-sidebar/lib/client.js" "mobile-no-margin-push-v3"
+_js_patch_check "20-web-mobile-chrome-viewport-resizes"    "$_PROFILE_NM/dsh-web-mobile/lib/client.js"      "chrome-viewport-resizes-content"
 
 # ── Step 9: Runtime smoke test ───────────────────────────────────────────────
 echo "==> [9/9] Runtime smoke test..."
