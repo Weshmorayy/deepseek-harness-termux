@@ -905,31 +905,30 @@ dsh --profile web --dump-config   # must exit 0
 
 ## Roadblock 27 — Scroll dead space (better-sidebar, persistent)
 
-**Symptom:** A blank ~220px band below the conversation column on Chrome for Android. Persists on fresh page load. Confirmed: disabling `dsh-better-sidebar` removes the gap.
+**Symptom:** A massive ~1000px black dead space below the conversation column on Chrome for Android. The user can scroll past the composer into a huge empty void (documented via screenshots).
 
-**Root cause chain:**
-1. `dsh-better-sidebar` injects `#root [data-dsh-center-col] { margin-bottom: var(--dsh-sidebar-height, 0px) }` via a CSS constant. This reserves space for the bottom workbench.
-2. `--dsh-sidebar-height` is written by `writeGeometry()` in the React shell. It equals `bottomPushHeight(height) + keyboardInset` when `bottomOpen=true`, else 0.
-3. `bottomOpen` is hydrated from localStorage — if the user had it open previously, it stays true even after tabs are pruned (`sanitizeState()` didn't cross-check).
-4. Even when `bottomOpen` is legitimately true (open tab), the margin-bottom applies. But the bottom panel is `position:absolute;bottom:0` — it **overlays** the conversation and never contributes to in-flow layout. The `margin-bottom` is wasted dead space on mobile.
+**Root causes identified:**
+1. `dsh-better-sidebar` injects `#root [data-dsh-center-col] { margin-bottom: var(--dsh-sidebar-height, 0px) }` via a CSS constant.
+2. In upstream `lib/client.js`, `@media (prefers-reduced-motion: reduce) {` opened at line 76 was **never closed**, causing all subsequent CSS rules in the constant (including mobile media query overrides) to be trapped and ignored on standard mobile browsers.
+3. On mobile, the bottom panel (`.bottomPanel`) is `position: absolute; bottom: 0` (it overlays the viewport), so any layout push margin-bottom is pure dead space.
+4. `writeGeometry(height)` in the React shell wrote `--dsh-sidebar-height` without checking for mobile viewports.
 
 **Patches applied:**
-- `17-better-sidebar-mobile-dead-space.js` — gate `keyboardInset` on a focused editable; add settle/focusout listeners (intermittent gap after typing)
-- `18-better-sidebar-bottomopen-hydration.js` — force `bottomOpen=false` in `sanitizeState()` when no tabs survive pruning (fresh-load gap with empty pane)
-- `19-better-sidebar-mobile-no-margin-push.js` — append `@media (max-width:820px) { #root [data-dsh-center-col] { margin-bottom: 0 !important } }` to the injected CSS constant (definitive fix: margin-bottom has no effect on mobile regardless of `bottomOpen`)
-
-**Better-sidebar also updated:** 0.26.0 → 0.26.1 (lag/interval fixes; patches re-applied after update).
+- `17-better-sidebar-mobile-dead-space.js` — gate `keyboardInset` on a focused editable; add settle/focusout listeners.
+- `18-better-sidebar-bottomopen-hydration.js` — force `bottomOpen=false` in `sanitizeState()` when no tabs survive pruning.
+- `19-better-sidebar-mobile-no-margin-push.js` (v3):
+  * **JS layer:** In `writeGeometry(height)`, if `window.innerWidth <= 820`, unconditionally write `"0px"`.
+  * **CSS layer:** Scoped `margin-bottom: var(--dsh-sidebar-height, 0px)` inside `@media (min-width: 821px)` (desktop only); default mobile margin-bottom is `0px`.
+  * **Syntax fix:** Closed the unclosed `@media (prefers-reduced-motion: reduce)` block to restore full CSS validity.
 
 ---
 
-## Roadblock 28 — memory-eternal distill config silently reverts
+## Roadblock 28 — Memory plugin upgrade: dsh-mnemon
 
-**Symptom:** `captureProvider` and `captureModel` reset to `""` after plugin saves/UI restarts. All 47 memory cards accumulated as raw transcript fallback (`distill-failed`).
+**Symptom:** `memory-eternal@0.10.36` silently wiped `captureProvider`/`captureModel` after UI saves, caused 47 failed distillation cards, and its port 7999 web server never bound. Pure headless replacements lacked a user-facing GUI in DSH.
 
-**Resolution:** Replaced `memory-eternal@0.10.36` with `@shion-lab/dsh-plugin-memory@0.3.2`:
-- MemoryGuard blocks raw stack traces, diffs, API keys from storage
-- Clean Markdown storage at `~/.dsh/MEMORY.md` (no silent config revert)
-- 30-day exponential recency decay, frequency reinforcement
-- No distill LLM call → no token cost on capture
+**Resolution:** Upgraded to **`dsh-mnemon@0.5.40`**:
+- **Full Client UI Integration:** Registered into `@deepseek-ai/dsh-client-ui-settings`, `@deepseek-ai/dsh-client-ui-sidebar`, `@deepseek-ai/dsh-client-ui-conversation`, and session bars. User can inspect turn-by-turn memory and configure memory spaces directly in the DSH Settings and Sidebar.
+- **Pluggable & Zero Waste:** No expensive distillation background token costs; structured multi-tier memory spaces.
+- **Config:** Managed via `dsh plugin --profile web add dsh-mnemon` with automatic bundle layer patching. `memory-eternal` is disabled.
 
-`memory-eternal` disabled in `cordis.patch.yml`. New plugin registered as `shion-memory`.

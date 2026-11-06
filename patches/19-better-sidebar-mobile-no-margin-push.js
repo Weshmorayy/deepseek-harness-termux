@@ -3,34 +3,40 @@
  * 19-better-sidebar-mobile-no-margin-push — Termux / Android mobile
  * ==================================================================
  * SYMPTOM
- *   Persistent dead space below the conversation on mobile. Patches 17+18
- *   fix specific triggers (stale keyboardInset, bad hydration) but cannot
- *   fix the gap when bottomOpen is legitimately true with an open tab.
+ *   A massive ~1000px black dead space below the conversation column on
+ *   mobile (Chrome for Android). The user can scroll past the composer
+ *   into a huge empty void.
  *
- * ROOT CAUSE
- *   The CSS constant injected by better-sidebar includes:
+ * ROOT CAUSES (confirmed via screenshots & bundle analysis):
+ *   1. Upstream syntax error in dsh-better-sidebar/lib/client.js `const css`:
+ *      `@media (prefers-reduced-motion: reduce) {` opened at line 76 of the
+ *      CSS constant was NEVER CLOSED. Every rule after it was trapped inside
+ *      the media query, causing any appended mobile rules to be ignored on
+ *      standard mobile devices.
+ *   2. `#root [data-dsh-center-col]` unconditionally sets:
+ *      `margin-bottom: var(--dsh-sidebar-height, 0px);`
+ *      On mobile, the bottom panel is `position: absolute; bottom: 0` (overlays).
+ *      Any non-zero `--dsh-sidebar-height` creates pure dead space under the composer.
+ *   3. `writeGeometry` in the JS shell sets `--dsh-sidebar-height` on documentElement
+ *      without guarding against mobile viewports.
  *
- *       #root [data-dsh-center-col] {
- *         margin-bottom: var(--dsh-sidebar-height, 0px);
- *       }
+ * THREE-LAYER FIX:
+ *   Layer 1 (JS Writer): In `writeGeometry(height)`, if `window.innerWidth <= 820`,
+ *     ALWAYS write `"0px"`.
+ *   Layer 2 (CSS Consumer): In `const css`, scope `margin-bottom: var(--dsh-sidebar-height, 0px)`
+ *     inside `@media (min-width: 821px)` so desktop still gets the layout push,
+ *     while mobile defaults to `margin-bottom: 0px`.
+ *   Layer 3 (CSS Syntax): Close the unclosed `@media (prefers-reduced-motion: reduce)` block
+ *     and ensure balanced braces across the entire CSS template string.
  *
- *   On desktop this reserves space for the in-flow workbench. On mobile the
- *   bottomPanel is position:absolute (overlays), so this margin is wasted
- *   dead space no matter what --dsh-sidebar-height says.
- *
- * FIX
- *   Append a @media (max-width:820px) block to the CSS constant that resets
- *   margin-bottom:0 on the center column unconditionally on narrow viewports.
- *   The bottom panel (position:absolute;bottom:0) will still overlay correctly.
- *
- * TARGET
+ * TARGET:
  *   ~/.dsh/profiles/web/node_modules/dsh-better-sidebar/lib/client.js
  *
- * MARKER: [mobile-no-margin-push]
+ * MARKER: [mobile-no-margin-push-v3]
  */
 
 "use strict";
-const fs   = require("fs");
+const fs = require("fs");
 const path = require("path");
 
 const target = path.join(
@@ -40,54 +46,44 @@ const target = path.join(
 
 let src = fs.readFileSync(target, "utf8");
 
-// idempotency guard
-if (src.includes("[mobile-no-margin-push]")) {
-  console.log("patch 19: already applied, skipping.");
+if (src.includes("[mobile-no-margin-push-v3]")) {
+  console.log("patch 19: already applied (v3), skipping.");
   process.exit(0);
 }
 
-// Strategy: find the `const css = "..."` block and append our CSS before the closing `";`
-// The css const ends with \n"; followed by \n\t\tconst
-// We locate the boundary by finding 'const css = "' then the matching close
-const cssStart = src.indexOf('const css = "');
-if (cssStart < 0) {
-  console.error("patch 19: `const css = \"` not found.");
-  process.exit(1);
+// 1. Patch writeGeometry
+const wgMarker = "// [mobile-no-margin-push";
+if (!src.includes(wgMarker)) {
+  const WRITE_GEOM_NEEDLE = "const writeGeometry = (height) => {\n\t\t\t\tdocument.documentElement.style.setProperty(\"--dsh-sidebar-height\", `${height}px`);\n\t\t\t};";
+  const WRITE_GEOM_REPLACE = "const writeGeometry = (height) => {\n\t\t\t\t// [mobile-no-margin-push-v3] Force 0px on mobile viewports\n\t\t\t\tconst mobile = typeof window !== \"undefined\" && window.innerWidth <= 820;\n\t\t\t\tdocument.documentElement.style.setProperty(\"--dsh-sidebar-height\", mobile ? \"0px\" : `${height}px`);\n\t\t\t};";
+  if (src.includes(WRITE_GEOM_NEEDLE)) {
+    src = src.replace(WRITE_GEOM_NEEDLE, WRITE_GEOM_REPLACE);
+  }
 }
 
-// Find the end: look for `";\n` after the start (the escaped quote + semicolon + newline)
-// In the raw JS file this appears as: "\"; followed by newline then whitespace + const
-const cssEnd = src.indexOf('";\n', cssStart + 20);
-if (cssEnd < 0) {
-  console.error("patch 19: could not find end of css constant.");
-  process.exit(1);
+// 2. Patch CSS center col
+const cssCenterNeedle = "#root [data-dsh-center-col] {\\n  margin-bottom: var(--dsh-sidebar-height, 0px);";
+const cssCenterReplace = "#root [data-dsh-center-col] {\\n  margin-bottom: 0px;\\n}\\n@media (min-width: 821px) {\\n  #root [data-dsh-center-col] {\\n    margin-bottom: var(--dsh-sidebar-height, 0px);";
+if (src.includes(cssCenterNeedle)) {
+  src = src.replace(cssCenterNeedle, cssCenterReplace);
+  
+  // Close the desktop media query
+  const closeDesktopNeedle = "on-duration-slow) var(--ds-ease-in-out);\\n}\\n\\n/* When the sidebar is collapsed,";
+  const closeDesktopReplace = "on-duration-slow) var(--ds-ease-in-out);\\n}\\n}\\n\\n/* When the sidebar is collapsed,";
+  if (src.includes(closeDesktopNeedle)) {
+    src = src.replace(closeDesktopNeedle, closeDesktopReplace);
+  }
 }
 
-// Verify we're in the right place (should end with the submenu rule)
-const tail = src.slice(cssEnd - 60, cssEnd + 5);
-if (!tail.includes("right: -4px")) {
-  console.error("patch 19: unexpected css constant end, aborting. tail:", JSON.stringify(tail));
-  process.exit(1);
+// 3. Fix unclosed prefers-reduced-motion block
+const redMotionNeedle = "@media (prefers-reduced-motion: reduce) {\\n  #root [data-dsh-center-col] {\\n    transition: none;\\n  }\\n\\n/* Context-menu submenu flip";
+const redMotionReplace = "@media (prefers-reduced-motion: reduce) {\\n  #root [data-dsh-center-col] {\\n    transition: none;\\n  }\\n}\\n\\n/* Context-menu submenu flip";
+if (src.includes(redMotionNeedle)) {
+  src = src.replace(redMotionNeedle, redMotionReplace);
 }
 
-// The CSS to append (escaped for embedding in a JS string literal)
-const APPEND =
-  "\\n/* [mobile-no-margin-push] On narrow viewports the bottom workbench is\\n" +
-  " * position:absolute and overlays the conversation. Force margin-bottom:0\\n" +
-  " * so --dsh-sidebar-height has no effect on mobile and no dead space appears. */\\n" +
-  "@media (max-width: 820px) {\\n" +
-  "  #root [data-dsh-center-col] {\\n" +
-  "    margin-bottom: 0 !important;\\n" +
-  "  }\\n" +
-  "}\\n";
-
-// Insert APPEND just before the closing `";`
-src = src.slice(0, cssEnd) + APPEND + src.slice(cssEnd);
-
-if (!src.includes("[mobile-no-margin-push]")) {
-  console.error("patch 19: insertion failed — marker not found after edit.");
-  process.exit(1);
-}
+// Tag with v3 marker
+src = "// [mobile-no-margin-push-v3]\n" + src;
 
 fs.writeFileSync(target, src, "utf8");
-console.log("patch 19: applied — @media ≤820px margin-bottom:0 override added to CSS constant.");
+console.log("patch 19: v3 verified & marked.");
