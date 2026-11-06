@@ -961,4 +961,30 @@ dsh --profile web --dump-config   # must exit 0
 - Stored globally in `~/.dsh/mcp-servers.json`.
 - Registered as Cordis service in `cordis.patch.yml`.
 
+---
+
+## Roadblock 31 — Compaction Loop / Overcompaction (OpenRouter MaxTokens Invariant)
+
+**Symptom:** Compaction entered an infinite loop on every step (e.g. 68 compactions across 51 turns) in session "Continue from handoff checkpoint files (2)", generating endless redundant checkpoints and locking up the agent.
+
+**Root cause chain:**
+1. `dsh-compaction-basic` calculates its trigger threshold:
+   ```
+   threshold = min( thresholdRatio × contextWindow, contextWindow − maxTokens − 65536 )
+   ```
+2. When `refresh-openrouter-models.mjs` refreshed the OpenRouter models catalog, it set `maxTokens: 943718` (from `top_provider.max_completion_tokens`) for `stealth/crouton-alpha` (1,048,576 context window).
+3. This collapsed the compaction headroom:
+   `1,048,576 − 943,718 − 65,536 = 39,322 tokens`.
+   Because live context sat at ~45,000 tokens, the threshold was exceeded continuously on every single turn.
+4. Furthermore, the active session stored the poisoned `maxTokens: 943718` in its `request/header` events, causing the loop to resume even across restarts.
+
+**Resolution:**
+- **Script Guard:** Patched `~/.dsh/refresh-openrouter-models.mjs` `tokenCeiling` to clamp `maxTokens` to `65536` for all models, restoring the trigger threshold to **157,286 tokens**.
+- **Config Refresh:** Re-ran `node ~/.dsh/refresh-openrouter-models.mjs --force` to regenerate `cordis.patch.yml` and `settings.yaml` with 0 models exceeding 65536.
+- **Session Repair:**
+  - Backed up session directory to `session-6cdac9ea-81ca-4a29-8c51-fa55cac5bffc.bak-20261106`.
+  - Patched `session.v4.jsonl.zstd` to rewrite all poisoned `request/header` `maxTokens` entries to `65536`.
+  - Cleared stale projection cache `~/.dsh/storages/session_projcache/sessions/session-6cdac9ea-81ca-4a29-8c51-fa55cac5bffc.json` for a clean reload.
+
+
 
